@@ -1,0 +1,10 @@
+[package]
+name = "rust-api-server"
+authors = ["gushiii <zrjie001@gmail.com>"]
+description = "A zero-code API server framework in Rust, leveraging runtime reflection to dynamically convert PgRow to JSON Value and providing generic, injection-proof dynamic CRUD handlers."
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
