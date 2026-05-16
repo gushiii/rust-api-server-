@@ -96,8 +96,12 @@ pub async fn handle_list(
         ctx.select_fields, table_name, ctx.sql_clauses
     );
 
-    if let Some(group_field) = ctx.group_by {
-        sql.push_str(&format!(" GROUP BY `{}`", group_field));
+    if let Some(g) = ctx.group_by {
+        sql.push_str(&format!(" GROUP BY `{}`", g));
+    }
+
+    if !ctx.having_clauses.is_empty() {
+        sql.push_str(&format!(" HAVING 1=1 {}", ctx.having_clauses));
     }
 
     if ctx.limit.is_some() {
@@ -122,9 +126,10 @@ pub async fn handle_list(
         .fetch_all(&state.pool)
         .await
         .map_err(|e| ApiResponse::internal_error(e.to_string()))?;
-    let json_array = Value::Array(rows.iter().map(mysql_row_to_json).collect());
-
-    Ok(ApiResponse::success(json_array, start))
+    Ok(ApiResponse::success(
+        Value::Array(rows.iter().map(mysql_row_to_json).collect()),
+        start,
+    ))
 }
 
 pub async fn handle_get(

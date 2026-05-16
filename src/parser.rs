@@ -6,6 +6,7 @@ pub struct QueryContext {
     pub sql_clauses: String,
     pub bind_values: Vec<Value>,
     pub group_by: Option<String>,
+    pub having_clauses: String,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -30,11 +31,11 @@ pub fn parse_query_params(params: &HashMap<String, String>) -> Result<QueryConte
 
     let mut select_list = Vec::new();
     let mut group_by = None;
+    let mut having_clauses = String::new();
 
     if let Some(g_str) = params.get("_group") {
         validate_identifier(g_str)?;
         group_by = Some(g_str.to_string());
-
         select_list.push(format!("`{}`", g_str));
     }
     if let Some(l_str) = params.get("_limit") {
@@ -50,6 +51,7 @@ pub fn parse_query_params(params: &HashMap<String, String>) -> Result<QueryConte
             || key == "_where"
             || key == "_group"
             || key == "_aggregate"
+            || key == "_having"
         {
             continue;
         }
@@ -117,6 +119,7 @@ pub fn parse_query_params(params: &HashMap<String, String>) -> Result<QueryConte
         }
     }
 
+    let mut agg_functions_map = HashMap::new();
     if let Some(agg_str) = params.get("_aggregate") {
         let agg_obj: Value = serde_json::from_str(agg_str)
             .map_err(|e| format!("Invalid JSON inside _aggregate parameter: {}", e))?;
@@ -132,24 +135,88 @@ pub fn parse_query_params(params: &HashMap<String, String>) -> Result<QueryConte
                     "count" => {
                         if field_str == "*" {
                             select_list.push("COUNT(*) AS `count`".to_string());
+                            agg_functions_map.insert("count".to_string(), "COUNT(*)".to_string());
                         } else {
                             select_list
                                 .push(format!("COUNT(`{}`) AS `count_{}`", field_str, field_str));
+                            agg_functions_map.insert(
+                                format!("count_{}", field_str),
+                                format!("COUNT(`{}`)", field_str),
+                            );
                         }
                     }
                     "sum" => {
-                        select_list.push(format!("SUM(`{}`) AS `sum_{}`", field_str, field_str))
+                        select_list.push(format!("SUM(`{}`) AS `sum_{}`", field_str, field_str));
+                        agg_functions_map.insert(
+                            format!("sum_{}", field_str),
+                            format!("SUM(`{}`)", field_str),
+                        );
                     }
                     "avg" => {
-                        select_list.push(format!("AVG(`{}`) AS `avg_{}`", field_str, field_str))
+                        select_list.push(format!("AVG(`{}`) AS `avg_{}`", field_str, field_str));
+                        agg_functions_map.insert(
+                            format!("avg_{}", field_str),
+                            format!("AVG(`{}`)", field_str),
+                        );
                     }
                     "max" => {
-                        select_list.push(format!("MAX(`{}`) AS `max_{}`", field_str, field_str))
+                        select_list.push(format!("MAX(`{}`) AS `max_{}`", field_str, field_str));
+                        agg_functions_map.insert(
+                            format!("max_{}", field_str),
+                            format!("MAX(`{}`)", field_str),
+                        );
                     }
                     "min" => {
-                        select_list.push(format!("MIN(`{}`) AS `min_{}`", field_str, field_str))
+                        select_list.push(format!("MIN(`{}`) AS `min_{}`", field_str, field_str));
+                        agg_functions_map.insert(
+                            format!("min_{}", field_str),
+                            format!("MIN(`{}`)", field_str),
+                        );
                     }
                     _ => return Err(format!("Unsupported aggregate function: {}", func_type)),
+                }
+            }
+        }
+    }
+
+    if let Some(having_str) = params.get("_having") {
+        let having_obj: Value = serde_json::from_str(having_str)
+            .map_err(|e| format!("Invalid JSON inside _having parameter: {}", e))?;
+
+        if let Some(having_map) = having_obj.as_object() {
+            for (alias_key, block) in having_map {
+                let physical_agg_func = if agg_functions_map.contains_key(alias_key) {
+                    agg_functions_map.get(alias_key).unwrap().clone()
+                } else if alias_key == "count" && agg_functions_map.contains_key("count") {
+                    "COUNT(*)".to_string()
+                } else {
+                    return Err(format!(
+                        "HAVING error: field '{}' must be declared inside _aggregate first",
+                        alias_key
+                    ));
+                };
+
+                match block {
+                    Value::String(_) | Value::Number(_) | Value::Bool(_) => {
+                        having_clauses.push_str(&format!(" AND {} = ?", physical_agg_func));
+                        bind_values.push(block.clone());
+                    }
+                    Value::Object(inner_map) => {
+                        for (op, op_val) in inner_map {
+                            let op_sql = match op.as_str() {
+                                "$gt" => ">",
+                                "$gte" => ">=",
+                                "$lt" => "<",
+                                "$lte" => "<=",
+                                "$neq" => "!=",
+                                _ => return Err(format!("Unsupported operator in HAVING: {}", op)),
+                            };
+                            having_clauses
+                                .push_str(&format!(" AND {} {} ?", physical_agg_func, op_sql));
+                            bind_values.push(op_val.clone());
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -170,6 +237,7 @@ pub fn parse_query_params(params: &HashMap<String, String>) -> Result<QueryConte
         sql_clauses,
         bind_values,
         group_by,
+        having_clauses,
         limit,
         offset,
     })
