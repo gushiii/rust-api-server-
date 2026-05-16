@@ -36,7 +36,6 @@ pub async fn handle_create(
     Json(payload): Json<Value>,
 ) -> Result<ApiResponse<Value>, ApiResponse<Value>> {
     let start = Instant::now();
-
     validate_identifier(&table_name).map_err(ApiResponse::bad_request)?;
     let obj = payload
         .as_object()
@@ -88,15 +87,19 @@ pub async fn handle_list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<ApiResponse<Value>, ApiResponse<Value>> {
     let start = Instant::now();
-
     validate_identifier(&table_name).map_err(ApiResponse::bad_request)?;
 
     let ctx = parse_query_params(&params).map_err(ApiResponse::bad_request)?;
 
     let mut sql = format!(
-        "SELECT * FROM `{}` WHERE 1=1 {}",
-        table_name, ctx.sql_clauses
+        "SELECT {} FROM `{}` WHERE 1=1 {}",
+        ctx.select_fields, table_name, ctx.sql_clauses
     );
+
+    if let Some(group_field) = ctx.group_by {
+        sql.push_str(&format!(" GROUP BY `{}`", group_field));
+    }
+
     if ctx.limit.is_some() {
         sql.push_str(" LIMIT ?");
     }
@@ -129,7 +132,6 @@ pub async fn handle_get(
     Path((table_name, id)): Path<(String, String)>,
 ) -> Result<ApiResponse<Value>, ApiResponse<Value>> {
     let start = Instant::now();
-
     validate_identifier(&table_name).map_err(ApiResponse::bad_request)?;
     let pk = get_primary_key(&state.pool, &table_name).await?;
     let row = sqlx::query(&format!(
@@ -139,8 +141,7 @@ pub async fn handle_get(
     .bind(id)
     .fetch_one(&state.pool)
     .await
-    .map_err(|e| ApiResponse::internal_error(format!("Row not found or database error: {}", e)))?;
-
+    .map_err(|e| ApiResponse::internal_error(e.to_string()))?;
     Ok(ApiResponse::success(mysql_row_to_json(&row), start))
 }
 
@@ -150,7 +151,6 @@ pub async fn handle_update(
     Json(payload): Json<Value>,
 ) -> Result<ApiResponse<Value>, ApiResponse<Value>> {
     let start = Instant::now();
-
     validate_identifier(&table_name).map_err(ApiResponse::bad_request)?;
     let obj = payload
         .as_object()
@@ -196,7 +196,6 @@ pub async fn handle_update(
     .fetch_one(&state.pool)
     .await
     .map_err(|e| ApiResponse::internal_error(e.to_string()))?;
-
     Ok(ApiResponse::success(mysql_row_to_json(&row), start))
 }
 
@@ -205,7 +204,6 @@ pub async fn handle_delete(
     Path((table_name, id)): Path<(String, String)>,
 ) -> Result<ApiResponse<Value>, ApiResponse<Value>> {
     let start = Instant::now();
-
     validate_identifier(&table_name).map_err(ApiResponse::bad_request)?;
     let pk = get_primary_key(&state.pool, &table_name).await?;
     let result = sqlx::query(&format!("DELETE FROM `{}` WHERE `{}` = ?", table_name, pk))
@@ -219,6 +217,5 @@ pub async fn handle_delete(
         "rows_affected".to_string(),
         Value::Number(result.rows_affected().into()),
     );
-
     Ok(ApiResponse::success(Value::Object(response), start))
 }
