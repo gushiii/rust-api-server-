@@ -1,5 +1,7 @@
+mod binder;
 mod encoder;
 mod handlers;
+mod parser;
 
 use axum::{
     Router,
