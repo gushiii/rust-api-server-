@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 use sqlx::mysql::MySqlRow;
+use sqlx::types::BigDecimal;
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 
 pub fn mysql_row_to_json(row: &MySqlRow) -> Value {
@@ -43,6 +44,24 @@ pub fn mysql_row_to_json(row: &MySqlRow) -> Value {
                     serde_json::Number::from_f64(val)
                         .map(Value::Number)
                         .unwrap_or(Value::Null)
+                }
+
+                "DECIMAL" | "NEWDECIMAL" => {
+                    if let Ok(decimal_val) = row.try_get::<BigDecimal, _>(col_name) {
+                        let s = decimal_val.to_string();
+                        if let Ok(f) = s.parse::<f64>() {
+                            serde_json::Number::from_f64(f)
+                                .map(Value::Number)
+                                .unwrap_or(Value::Null)
+                        } else {
+                            Value::String(s)
+                        }
+                    } else {
+                        let val: f64 = row.try_get(col_name).unwrap_or(0.0);
+                        serde_json::Number::from_f64(val)
+                            .map(Value::Number)
+                            .unwrap_or(Value::Null)
+                    }
                 }
                 "VARCHAR" | "VAR_STRING" | "STRING" | "BLOB" | "TEXT" => {
                     let val: String = row.try_get(col_name).unwrap_or_default();

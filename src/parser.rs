@@ -2,8 +2,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 pub struct QueryContext {
+    pub select_fields: String,
     pub sql_clauses: String,
     pub bind_values: Vec<Value>,
+    pub group_by: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -26,19 +28,31 @@ pub fn parse_query_params(params: &HashMap<String, String>) -> Result<QueryConte
     let mut sort_by = None;
     let mut order_by = "ASC".to_string();
 
-    for (key, value) in params {
-        if key == "_limit" {
-            limit = value.parse::<i64>().ok();
-            continue;
-        }
-        if key == "_offset" {
-            offset = value.parse::<i64>().ok();
-            continue;
-        }
-        if key == "_where" {
-            continue;
-        }
+    let mut select_list = Vec::new();
+    let mut group_by = None;
 
+    if let Some(g_str) = params.get("_group") {
+        validate_identifier(g_str)?;
+        group_by = Some(g_str.to_string());
+
+        select_list.push(format!("`{}`", g_str));
+    }
+    if let Some(l_str) = params.get("_limit") {
+        limit = l_str.parse::<i64>().ok();
+    }
+    if let Some(o_str) = params.get("_offset") {
+        offset = o_str.parse::<i64>().ok();
+    }
+
+    for (key, value) in params {
+        if key == "_limit"
+            || key == "_offset"
+            || key == "_where"
+            || key == "_group"
+            || key == "_aggregate"
+        {
+            continue;
+        }
         validate_identifier(key)?;
         sql_clauses.push_str(&format!(" AND `{}` = ?", key));
         bind_values.push(Value::String(value.clone()));
@@ -103,13 +117,59 @@ pub fn parse_query_params(params: &HashMap<String, String>) -> Result<QueryConte
         }
     }
 
+    if let Some(agg_str) = params.get("_aggregate") {
+        let agg_obj: Value = serde_json::from_str(agg_str)
+            .map_err(|e| format!("Invalid JSON inside _aggregate parameter: {}", e))?;
+
+        if let Some(agg_map) = agg_obj.as_object() {
+            for (func_type, target_field) in agg_map {
+                let field_str = target_field.as_str().unwrap_or("*");
+                if field_str != "*" {
+                    validate_identifier(field_str)?;
+                }
+
+                match func_type.as_str() {
+                    "count" => {
+                        if field_str == "*" {
+                            select_list.push("COUNT(*) AS `count`".to_string());
+                        } else {
+                            select_list
+                                .push(format!("COUNT(`{}`) AS `count_{}`", field_str, field_str));
+                        }
+                    }
+                    "sum" => {
+                        select_list.push(format!("SUM(`{}`) AS `sum_{}`", field_str, field_str))
+                    }
+                    "avg" => {
+                        select_list.push(format!("AVG(`{}`) AS `avg_{}`", field_str, field_str))
+                    }
+                    "max" => {
+                        select_list.push(format!("MAX(`{}`) AS `max_{}`", field_str, field_str))
+                    }
+                    "min" => {
+                        select_list.push(format!("MIN(`{}`) AS `min_{}`", field_str, field_str))
+                    }
+                    _ => return Err(format!("Unsupported aggregate function: {}", func_type)),
+                }
+            }
+        }
+    }
+
+    let select_fields = if select_list.is_empty() {
+        "*".to_string()
+    } else {
+        select_list.join(", ")
+    };
+
     if let Some(sort_field) = sort_by {
         sql_clauses.push_str(&format!(" ORDER BY `{}` {}", sort_field, order_by));
     }
 
     Ok(QueryContext {
+        select_fields,
         sql_clauses,
         bind_values,
+        group_by,
         limit,
         offset,
     })
